@@ -1,0 +1,226 @@
+// ============================================================
+// XAUUSD GOLD SNIPER PRO — by Claude
+// Optimised for XAUUSD | Works on 1min, 5min, 15min
+// Strategy: EMA Trend + RSI Momentum + ATR Volatility + Volume
+// ============================================================
+//@version=5
+indicator("XAUUSD Gold Sniper Pro", shorttitle="Gold Sniper Pro", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ============================================================
+// ─── USER INPUTS ────────────────────────────────────────────
+// ============================================================
+
+// Trend Settings
+grp_trend = "📈 Trend Filter"
+ema_fast       = input.int(8,   "Fast EMA",           minval=1,  group=grp_trend)
+ema_slow       = input.int(21,  "Slow EMA",           minval=1,  group=grp_trend)
+ema_htf        = input.int(50,  "HTF Trend EMA",      minval=1,  group=grp_trend)
+htf_tf         = input.timeframe("15", "HTF Timeframe", group=grp_trend)
+
+// RSI Settings
+grp_rsi = "📊 RSI Momentum"
+rsi_len        = input.int(14,  "RSI Length",         minval=2,  group=grp_rsi)
+rsi_ob         = input.int(70,  "RSI Overbought",     minval=50, group=grp_rsi)
+rsi_os         = input.int(30,  "RSI Oversold",       maxval=50, group=grp_rsi)
+
+// ATR / Volatility Settings
+grp_atr = "⚡ ATR Volatility"
+atr_len        = input.int(14,  "ATR Length",         minval=1,  group=grp_atr)
+atr_mult_sl    = input.float(1.5, "SL Multiplier",    minval=0.5, step=0.1, group=grp_atr)
+atr_mult_tp1   = input.float(2.0, "TP1 Multiplier",   minval=0.5, step=0.1, group=grp_atr)
+atr_mult_tp2   = input.float(3.5, "TP2 Multiplier",   minval=0.5, step=0.1, group=grp_atr)
+atr_min_filter = input.float(0.3, "Min ATR Filter (avoid chop, in $)", minval=0.0, step=0.05, group=grp_atr)
+
+// Volume Settings
+grp_vol = "📦 Volume Confirmation"
+vol_ma_len     = input.int(20,  "Volume MA Length",   minval=1,  group=grp_vol)
+vol_mult       = input.float(1.2, "Volume Spike x MA", minval=1.0, step=0.1, group=grp_vol)
+
+// Display Settings
+grp_disp = "🎨 Display Settings"
+show_emas      = input.bool(true,  "Show EMAs",        group=grp_disp)
+show_htf_ema   = input.bool(true,  "Show HTF EMA",     group=grp_disp)
+show_sl_tp     = input.bool(true,  "Show SL / TP Lines", group=grp_disp)
+show_labels    = input.bool(true,  "Show BUY/SELL Labels", group=grp_disp)
+show_dashboard = input.bool(true,  "Show Dashboard",   group=grp_disp)
+
+// Alerts
+grp_alert = "🔔 Alerts"
+alert_buy      = input.bool(true, "Alert on BUY Signal",  group=grp_alert)
+alert_sell     = input.bool(true, "Alert on SELL Signal", group=grp_alert)
+
+// ============================================================
+// ─── CALCULATIONS ───────────────────────────────────────────
+// ============================================================
+
+// EMAs
+ema8  = ta.ema(close, ema_fast)
+ema21 = ta.ema(close, ema_slow)
+
+// HTF EMA (higher timeframe trend filter)
+htf_ema50 = request.security(syminfo.tickerid, htf_tf, ta.ema(close, ema_htf), lookahead=barmerge.lookahead_off)
+
+// RSI
+rsi = ta.rsi(close, rsi_len)
+
+// ATR
+atr = ta.atr(atr_len)
+
+// Volume MA
+vol_ma = ta.sma(volume, vol_ma_len)
+vol_spike = volume > vol_ma * vol_mult
+
+// ============================================================
+// ─── TREND DIRECTION ────────────────────────────────────────
+// ============================================================
+
+bull_trend = close > htf_ema50 and ema8 > ema21
+bear_trend = close < htf_ema50 and ema8 < ema21
+
+// ============================================================
+// ─── SIGNAL CONDITIONS ──────────────────────────────────────
+// ============================================================
+
+// EMA crossover
+ema_bull_cross = ta.crossover(ema8, ema21)
+ema_bear_cross = ta.crossunder(ema8, ema21)
+
+// RSI momentum confirmation (not overbought on buy, not oversold on sell)
+rsi_bull_ok = rsi > 45 and rsi < rsi_ob
+rsi_bear_ok = rsi < 55 and rsi > rsi_os
+
+// Candle body confirmation (bullish/bearish candle at signal)
+bull_candle = close > open
+bear_candle = close < open
+
+// ATR volatility filter (avoid choppy markets)
+atr_ok = atr >= atr_min_filter
+
+// ============================================================
+// ─── FINAL BUY / SELL SIGNALS ───────────────────────────────
+// ============================================================
+
+buy_signal  = ema_bull_cross and bull_trend and rsi_bull_ok and vol_spike and atr_ok and bull_candle
+sell_signal = ema_bear_cross and bear_trend and rsi_bear_ok and vol_spike and atr_ok and bear_candle
+
+// ============================================================
+// ─── STOP LOSS & TAKE PROFIT ────────────────────────────────
+// ============================================================
+
+var float buy_sl  = na
+var float buy_tp1 = na
+var float buy_tp2 = na
+var float sell_sl  = na
+var float sell_tp1 = na
+var float sell_tp2 = na
+
+if buy_signal
+    buy_sl  := close - atr * atr_mult_sl
+    buy_tp1 := close + atr * atr_mult_tp1
+    buy_tp2 := close + atr * atr_mult_tp2
+
+if sell_signal
+    sell_sl  := close + atr * atr_mult_sl
+    sell_tp1 := close - atr * atr_mult_tp1
+    sell_tp2 := close - atr * atr_mult_tp2
+
+// ============================================================
+// ─── PLOTTING ───────────────────────────────────────────────
+// ============================================================
+
+// EMAs
+plot(show_emas ? ema8  : na, "EMA 8",  color=color.new(#00E5FF, 0), linewidth=2)
+plot(show_emas ? ema21 : na, "EMA 21", color=color.new(#FF6D00, 0), linewidth=2)
+plot(show_htf_ema ? htf_ema50 : na, "HTF EMA 50", color=color.new(#FFD700, 30), linewidth=2, style=plot.style_stepline)
+
+// BUY / SELL Arrows
+plotshape(buy_signal,  title="BUY",  style=shape.labelup,   location=location.belowbar, color=color.new(#00C853, 0), textcolor=color.white, text="BUY",  size=size.normal)
+plotshape(sell_signal, title="SELL", style=shape.labeldown, location=location.abovebar, color=color.new(#D50000, 0), textcolor=color.white, text="SELL", size=size.normal)
+
+// SL / TP Lines
+var line ln_buy_sl  = na
+var line ln_buy_tp1 = na
+var line ln_buy_tp2 = na
+var line ln_sell_sl  = na
+var line ln_sell_tp1 = na
+var line ln_sell_tp2 = na
+
+draw_line(price, col, lw) =>
+    line.new(bar_index, price, bar_index + 8, price, color=col, width=lw, style=line.style_dashed)
+
+if show_sl_tp
+    if buy_signal
+        ln_buy_sl  := draw_line(buy_sl,  color.new(#FF1744, 80), 2)
+        ln_buy_tp1 := draw_line(buy_tp1, color.new(#00C853, 80), 2)
+        ln_buy_tp2 := draw_line(buy_tp2, color.new(#00C853, 60), 2)
+
+    if sell_signal
+        ln_sell_sl  := draw_line(sell_sl,  color.new(#FF1744, 80), 2)
+        ln_sell_tp1 := draw_line(sell_tp1, color.new(#00C853, 80), 2)
+        ln_sell_tp2 := draw_line(sell_tp2, color.new(#00C853, 60), 2)
+
+// Labels for SL/TP
+if show_sl_tp and show_labels
+    if buy_signal
+        label.new(bar_index + 1, buy_sl,  "SL: " + str.tostring(math.round(buy_sl, 2)),  color=color.new(#FF1744,70), textcolor=color.white, style=label.style_label_right, size=size.small)
+        label.new(bar_index + 1, buy_tp1, "TP1: " + str.tostring(math.round(buy_tp1, 2)), color=color.new(#00C853,70), textcolor=color.white, style=label.style_label_right, size=size.small)
+        label.new(bar_index + 1, buy_tp2, "TP2: " + str.tostring(math.round(buy_tp2, 2)), color=color.new(#00C853,50), textcolor=color.white, style=label.style_label_right, size=size.small)
+    if sell_signal
+        label.new(bar_index + 1, sell_sl,  "SL: " + str.tostring(math.round(sell_sl, 2)),  color=color.new(#FF1744,70), textcolor=color.white, style=label.style_label_right, size=size.small)
+        label.new(bar_index + 1, sell_tp1, "TP1: " + str.tostring(math.round(sell_tp1, 2)), color=color.new(#00C853,70), textcolor=color.white, style=label.style_label_right, size=size.small)
+        label.new(bar_index + 1, sell_tp2, "TP2: " + str.tostring(math.round(sell_tp2, 2)), color=color.new(#00C853,50), textcolor=color.white, style=label.style_label_right, size=size.small)
+
+// ============================================================
+// ─── DASHBOARD TABLE ────────────────────────────────────────
+// ============================================================
+
+var table dash = table.new(position.top_right, 2, 8, border_width=1)
+
+if show_dashboard and barstate.islast
+    // Header
+    table.cell(dash, 0, 0, "GOLD SNIPER PRO",   bgcolor=#1A1A2E, text_color=color.new(#FFD700,0), text_size=size.normal, text_halign=text.align_center)
+    table.cell(dash, 1, 0, "XAUUSD",            bgcolor=#1A1A2E, text_color=color.new(#FFD700,0), text_size=size.normal, text_halign=text.align_center)
+    // Trend
+    trend_txt   = bull_trend ? "▲ BULLISH" : bear_trend ? "▼ BEARISH" : "↔ NEUTRAL"
+    trend_col   = bull_trend ? color.new(#00C853,20) : bear_trend ? color.new(#D50000,20) : color.new(#607D8B,20)
+    table.cell(dash, 0, 1, "HTF Trend",  bgcolor=#0D0D1A, text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 1, trend_txt,    bgcolor=trend_col, text_color=color.white, text_size=size.small)
+    // RSI
+    rsi_txt = rsi > rsi_ob ? "⚠ OVERBOUGHT" : rsi < rsi_os ? "⚠ OVERSOLD" : "✓ NORMAL (" + str.tostring(math.round(rsi,1)) + ")"
+    rsi_col = rsi > rsi_ob ? color.new(#FF6D00,20) : rsi < rsi_os ? color.new(#FF6D00,20) : color.new(#1B5E20,20)
+    table.cell(dash, 0, 2, "RSI",       bgcolor=#0D0D1A, text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 2, rsi_txt,     bgcolor=rsi_col, text_color=color.white,  text_size=size.small)
+    // Volume
+    vol_txt = vol_spike ? "✓ SPIKE" : "— LOW"
+    vol_col = vol_spike ? color.new(#1B5E20,20) : color.new(#37474F,20)
+    table.cell(dash, 0, 3, "Volume",    bgcolor=#0D0D1A, text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 3, vol_txt,     bgcolor=vol_col, text_color=color.white,  text_size=size.small)
+    // ATR
+    atr_txt = str.tostring(math.round(atr, 2)) + (atr_ok ? " ✓" : " ⚠ CHOP")
+    atr_col = atr_ok ? color.new(#1B5E20,20) : color.new(#B71C1C,20)
+    table.cell(dash, 0, 4, "ATR (Volatility)", bgcolor=#0D0D1A, text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 4, atr_txt,            bgcolor=atr_col, text_color=color.white,  text_size=size.small)
+    // EMA Cross
+    ema_txt = ema8 > ema21 ? "▲ BULL CROSS" : "▼ BEAR CROSS"
+    ema_col = ema8 > ema21 ? color.new(#1B5E20,20) : color.new(#B71C1C,20)
+    table.cell(dash, 0, 5, "EMA Cross",  bgcolor=#0D0D1A, text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 5, ema_txt,      bgcolor=ema_col, text_color=color.white,  text_size=size.small)
+    // Last signal
+    last_sig_txt = buy_signal ? "🟢 BUY" : sell_signal ? "🔴 SELL" : "— WAITING"
+    last_sig_col = buy_signal ? color.new(#00C853,20) : sell_signal ? color.new(#D50000,20) : color.new(#37474F,20)
+    table.cell(dash, 0, 6, "Last Signal", bgcolor=#0D0D1A, text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 6, last_sig_txt,  bgcolor=last_sig_col, text_color=color.white, text_size=size.small)
+    // Tip
+    table.cell(dash, 0, 7, "Best TF: 5min / 15min", bgcolor=#0D0D1A, text_color=color.new(#607D8B,0), text_size=size.tiny, text_halign=text.align_center)
+    table.cell(dash, 1, 7, "Always use SL!",        bgcolor=#0D0D1A, text_color=color.new(#D50000,0), text_size=size.tiny, text_halign=text.align_center)
+
+// ============================================================
+// ─── BACKGROUND COLORING (trend zone) ───────────────────────
+// ============================================================
+bgcolor(bull_trend ? color.new(#00C853, 97) : bear_trend ? color.new(#D50000, 97) : na, title="Trend BG")
+
+// ============================================================
+// ─── ALERTS ─────────────────────────────────────────────────
+// ============================================================
+alertcondition(buy_signal  and alert_buy,  title="Gold Sniper BUY",  message="🟢 GOLD SNIPER — BUY Signal on XAUUSD! Check chart for SL/TP levels.")
+alertcondition(sell_signal and alert_sell, title="Gold Sniper SELL", message="🔴 GOLD SNIPER — SELL Signal on XAUUSD! Check chart for SL/TP levels.")
