@@ -1,0 +1,456 @@
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║      XAUUSD + BTCUSD UNIVERSAL SNIPER — by Claude AI            ║
+// ║   Auto-detects market & adjusts all parameters automatically    ║
+// ║   Works on: XAUUSD (Gold) | BTCUSD | BTCUSDT | XBTUSDT         ║
+// ║   Timeframes: 1min / 5min / 15min                               ║
+// ║                                                                  ║
+// ║  STRATEGY STACK (10 Layers):                                    ║
+// ║  1. Auto Market Detection (Gold vs BTC auto-tune)               ║
+// ║  2. Multi-HTF Trend Alignment (15m + 1H)                        ║
+// ║  3. EMA Ribbon Momentum (8/13/21/34)                            ║
+// ║  4. RSI + RSI-EMA Momentum Confirmation                         ║
+// ║  5. MACD Histogram Acceleration                                 ║
+// ║  6. ATR Volatility Gate (no chop)                               ║
+// ║  7. Volume Institutional Spike Detection                        ║
+// ║  8. Candle Pattern (Engulf / Pin Bar)                           ║
+// ║  9. Session Filter (smart: Gold=London/NY | BTC=24/7+peaks)     ║
+// ║  10. Anti Stop-Hunt Filter (BTC wick trap detection)            ║
+// ╚══════════════════════════════════════════════════════════════════╝
+
+//@version=5
+indicator("Universal Sniper ⚡ GOLD + BTC", shorttitle="Sniper ⚡", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=200)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── GROUP DEFINITIONS ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+g0  = "═══ 🌐 MARKET MODE ═══"
+g1  = "═══ 📈 EMA RIBBON ═══"
+g2  = "═══ 🌐 HTF TREND FILTER ═══"
+g3  = "═══ 📊 RSI SETTINGS ═══"
+g4  = "═══ 🌀 MACD SETTINGS ═══"
+g5  = "═══ ⚡ ATR / VOLATILITY ═══"
+g6  = "═══ 📦 VOLUME ═══"
+g7  = "═══ 🕯 CANDLE PATTERNS ═══"
+g8  = "═══ 🕐 SESSION FILTER ═══"
+g9  = "═══ 🧱 SUPPORT / RESISTANCE ═══"
+g10 = "═══ 🎨 VISUALS ═══"
+g11 = "═══ 🔔 ALERTS ═══"
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── MARKET MODE ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+market_mode = input.string("Auto", "Market Mode",
+     options=["Auto", "Gold (XAUUSD)", "Bitcoin (BTCUSD)"],
+     tooltip="Auto detects Gold vs BTC and tunes all parameters automatically",
+     group=g0)
+
+// ─── Auto Detection ───────────────────────────────────────────────
+sym = syminfo.ticker
+is_btc_auto  = str.contains(sym, "BTC") or str.contains(sym, "XBT")
+is_gold_auto = str.contains(sym, "XAU") or str.contains(sym, "GOLD")
+
+is_btc  = market_mode == "Bitcoin (BTCUSD)" or (market_mode == "Auto" and is_btc_auto)
+is_gold = market_mode == "Gold (XAUUSD)"    or (market_mode == "Auto" and is_gold_auto)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── AUTO-TUNED PARAMETERS ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// All critical values auto-adjust based on detected market
+
+// ATR filter: Gold needs ~0.25, BTC needs ~50 (but we use % of price)
+atr_chop_pct    = is_btc ? 0.0008 : 0.00018   // % of close price for chop filter
+atr_sl_mult     = is_btc ? 2.0    : 1.5        // BTC needs wider SL for wicks
+atr_tp1_mult    = is_btc ? 1.8    : 1.5
+atr_tp2_mult    = is_btc ? 3.2    : 2.8
+atr_tp3_mult    = is_btc ? 5.5    : 4.5
+
+// Volume: BTC volume is cross-exchange so we use looser multiplier
+vol_mult_auto   = is_btc ? 1.2    : 1.3
+
+// RSI: BTC trends harder — adjust ob/os
+rsi_ob_auto     = is_btc ? 72     : 68
+rsi_os_auto     = is_btc ? 28     : 32
+
+// Anti stop-hunt: BTC only
+wick_hunt_ratio = is_btc ? 2.5    : 99.0       // 99 = effectively disabled for Gold
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── USER INPUTS ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+// EMA Ribbon
+e1 = input.int(8,  "EMA 1 (Fastest)",  group=g1)
+e2 = input.int(13, "EMA 2",            group=g1)
+e3 = input.int(21, "EMA 3",            group=g1)
+e4 = input.int(34, "EMA 4 (Slowest)",  group=g1)
+
+// HTF
+htf1           = input.timeframe("15", "HTF 1",          group=g2)
+htf2           = input.timeframe("60", "HTF 2",          group=g2)
+htf_ema_p      = input.int(50,         "HTF EMA Period",  group=g2)
+require_both   = input.bool(true, "Require BOTH HTFs aligned", group=g2)
+
+// RSI
+rsi_len        = input.int(14, "RSI Length",       group=g3)
+rsi_signal_len = input.int(9,  "RSI Signal EMA",   group=g3)
+
+// MACD
+macd_fast      = input.int(12, "MACD Fast",   group=g4)
+macd_slow      = input.int(26, "MACD Slow",   group=g4)
+macd_sig       = input.int(9,  "MACD Signal", group=g4)
+
+// ATR
+atr_len        = input.int(14, "ATR Length", group=g5)
+
+// Volume
+vol_len        = input.int(20, "Volume MA Length", group=g6)
+
+// Candle
+use_engulf     = input.bool(true,  "Require Engulfing / Pin Bar", group=g7)
+engulf_min     = input.float(1.5,  "Engulf Body Ratio",  step=0.1, group=g7)
+pin_ratio      = input.float(2.0,  "Pin Bar Wick Ratio", step=0.1, group=g7)
+
+// Session
+use_session    = input.bool(true, "Enable Session Filter",         group=g8)
+london_open    = input.int(7,  "London Open (UTC)",                group=g8)
+london_close   = input.int(12, "London Close (UTC)",               group=g8)
+ny_open        = input.int(12, "NY Open (UTC)",                    group=g8)
+ny_close       = input.int(20, "NY Close (UTC)",                   group=g8)
+btc_asia_ok    = input.bool(true, "BTC: Allow Asian Session",      group=g8,
+     tooltip="BTC trades 24/7 — Asian session can have valid BTC signals")
+
+// S/R
+sr_len         = input.int(20,   "S/R Lookback",    group=g9)
+sr_zone_pct    = input.float(0.15,"S/R Zone Width %", step=0.01, group=g9)
+show_sr        = input.bool(true, "Show S/R Zones",  group=g9)
+
+// Visuals
+show_ribbon    = input.bool(true, "Show EMA Ribbon",       group=g10)
+show_htf       = input.bool(true, "Show HTF EMA Lines",    group=g10)
+show_signals   = input.bool(true, "Show BUY/SELL Arrows",  group=g10)
+show_sl_tp     = input.bool(true, "Show SL / TP Levels",   group=g10)
+show_labels    = input.bool(true, "Show Price Labels",      group=g10)
+show_bg        = input.bool(true, "Show Trend Background",  group=g10)
+show_dash      = input.bool(true, "Show Dashboard",         group=g10)
+show_score     = input.bool(true, "Show Signal Score",      group=g10)
+
+// Alerts
+alert_buy      = input.bool(true, "Alert: BUY",  group=g11)
+alert_sell     = input.bool(true, "Alert: SELL", group=g11)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── CORE CALCULATIONS ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+// EMA Ribbon
+ema_1 = ta.ema(close, e1)
+ema_2 = ta.ema(close, e2)
+ema_3 = ta.ema(close, e3)
+ema_4 = ta.ema(close, e4)
+ribbon_bull = ema_1 > ema_2 and ema_2 > ema_3 and ema_3 > ema_4
+ribbon_bear = ema_1 < ema_2 and ema_2 < ema_3 and ema_3 < ema_4
+
+// HTF
+htf1_ema   = request.security(syminfo.tickerid, htf1, ta.ema(close, htf_ema_p), lookahead=barmerge.lookahead_off)
+htf2_ema   = request.security(syminfo.tickerid, htf2, ta.ema(close, htf_ema_p), lookahead=barmerge.lookahead_off)
+htf1_bull  = close > htf1_ema
+htf2_bull  = close > htf2_ema
+htf1_bear  = close < htf1_ema
+htf2_bear  = close < htf2_ema
+htf_bull   = require_both ? (htf1_bull and htf2_bull) : (htf1_bull or htf2_bull)
+htf_bear   = require_both ? (htf1_bear and htf2_bear) : (htf1_bear or htf2_bear)
+
+// RSI
+rsi        = ta.rsi(close, rsi_len)
+rsi_ema    = ta.ema(rsi, rsi_signal_len)
+rsi_bull   = rsi > 50 and rsi > rsi_ema and rsi < rsi_ob_auto
+rsi_bear   = rsi < 50 and rsi < rsi_ema and rsi > rsi_os_auto
+rsi_cup    = ta.crossover(rsi, rsi_ema)
+rsi_cdn    = ta.crossunder(rsi, rsi_ema)
+
+// MACD
+[macd_l, macd_s, macd_h] = ta.macd(close, macd_fast, macd_slow, macd_sig)
+macd_bull  = macd_l > macd_s and macd_h > 0 and macd_h > macd_h[1]
+macd_bear  = macd_l < macd_s and macd_h < 0 and macd_h < macd_h[1]
+
+// ATR
+atr        = ta.atr(atr_len)
+atr_filter = close * atr_chop_pct   // Dynamic % of price — works for both Gold & BTC
+atr_ok     = atr >= atr_filter
+
+// Volume
+vol_ma     = ta.sma(volume, vol_len)
+vol_spike  = volume >= vol_ma * vol_mult_auto
+
+// ─── Candle Patterns ─────────────────────────────────────────
+body       = math.abs(close - open)
+body_prev  = math.abs(close[1] - open[1])
+upper_wick = high - math.max(close, open)
+lower_wick = math.min(close, open) - low
+
+bull_engulf = close > open and close[1] < open[1] and close >= open[1] and open <= close[1] and body >= body_prev * engulf_min
+bear_engulf = close < open and close[1] > open[1] and close <= open[1] and open >= close[1] and body >= body_prev * engulf_min
+bull_pin    = lower_wick >= body * pin_ratio and upper_wick <= body * 1.2 and close > open
+bear_pin    = upper_wick >= body * pin_ratio and lower_wick <= body * 1.2 and close < open
+
+candle_bull = not use_engulf or (bull_engulf or bull_pin)
+candle_bear = not use_engulf or (bear_engulf or bear_pin)
+
+// ─── Anti Stop-Hunt Filter (BTC) ─────────────────────────────
+// Detects massive wicks suggesting stop hunt — avoid entering after these
+full_range    = high - low
+wick_dominant = full_range > 0 and (upper_wick / full_range > 0.6 or lower_wick / full_range > 0.6)
+stop_hunt_up  = is_btc and upper_wick >= body * wick_hunt_ratio   // Huge upper wick = bull trap
+stop_hunt_dn  = is_btc and lower_wick >= body * wick_hunt_ratio   // Huge lower wick = bear trap
+no_hunt_buy   = not stop_hunt_dn[1]  // Don't buy right after a bear stop hunt
+no_hunt_sell  = not stop_hunt_up[1]  // Don't sell right after a bull stop hunt
+
+// ─── Session Filter ───────────────────────────────────────────
+utc_hour    = hour(time, "UTC")
+in_london   = utc_hour >= london_open  and utc_hour < london_close
+in_ny       = utc_hour >= ny_open      and utc_hour < ny_close
+in_asia     = utc_hour >= 0            and utc_hour < 7
+in_session  = in_london or in_ny
+
+// BTC: allow Asian session if toggled, Gold: strict London/NY only
+btc_session_ok  = btc_asia_ok ? true : in_session
+session_ok      = not use_session or (is_btc ? btc_session_ok : in_session)
+
+// ─── EMA Cross Trigger ────────────────────────────────────────
+ema_cross_up   = ta.crossover(ema_1, ema_3)
+ema_cross_down = ta.crossunder(ema_1, ema_3)
+
+// ─── BTC Extra: Trend Strength (ADX proxy) ───────────────────
+// Using EMA spread as trend strength proxy
+ema_spread     = math.abs(ema_1 - ema_4) / close * 100
+trend_strong   = ema_spread > 0.05  // Meaningful trend, not ranging
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── SIGNAL SCORING SYSTEM ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+buy_score = 0
+buy_score := buy_score + (htf_bull      ? 2 : 0)   // HTF = 2pts (most critical)
+buy_score := buy_score + (ribbon_bull   ? 2 : 0)   // Ribbon = 2pts
+buy_score := buy_score + (rsi_bull      ? 1 : 0)   // RSI direction = 1pt
+buy_score := buy_score + (rsi_cup       ? 1 : 0)   // RSI cross = 1pt
+buy_score := buy_score + (macd_bull     ? 1 : 0)   // MACD = 1pt
+buy_score := buy_score + (vol_spike     ? 1 : 0)   // Volume = 1pt
+buy_score := buy_score + (candle_bull   ? 1 : 0)   // Candle pattern = 1pt
+buy_score := buy_score + (atr_ok        ? 1 : 0)   // Volatility ok = bonus 1pt
+
+sell_score = 0
+sell_score := sell_score + (htf_bear    ? 2 : 0)
+sell_score := sell_score + (ribbon_bear ? 2 : 0)
+sell_score := sell_score + (rsi_bear    ? 1 : 0)
+sell_score := sell_score + (rsi_cdn     ? 1 : 0)
+sell_score := sell_score + (macd_bear   ? 1 : 0)
+sell_score := sell_score + (vol_spike   ? 1 : 0)
+sell_score := sell_score + (candle_bear ? 1 : 0)
+sell_score := sell_score + (atr_ok      ? 1 : 0)
+
+min_score = 7
+
+// ─── FINAL SIGNALS ────────────────────────────────────────────
+buy_signal  = buy_score  >= min_score and ema_cross_up   and session_ok and atr_ok and no_hunt_buy  and trend_strong
+sell_signal = sell_score >= min_score and ema_cross_down and session_ok and atr_ok and no_hunt_sell and trend_strong
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── DYNAMIC SL / TP ───────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+swing_low  = ta.lowest(low,  10)
+swing_high = ta.highest(high, 10)
+
+var float b_sl  = na
+var float b_tp1 = na
+var float b_tp2 = na
+var float b_tp3 = na
+var float s_sl  = na
+var float s_tp1 = na
+var float s_tp2 = na
+var float s_tp3 = na
+
+if buy_signal
+    // SL: below swing low with small ATR buffer
+    b_sl  := math.min(swing_low  - atr * 0.3, close - atr * atr_sl_mult)
+    b_tp1 := close + atr * atr_tp1_mult
+    b_tp2 := close + atr * atr_tp2_mult
+    b_tp3 := close + atr * atr_tp3_mult
+
+if sell_signal
+    s_sl  := math.max(swing_high + atr * 0.3, close + atr * atr_sl_mult)
+    s_tp1 := close - atr * atr_tp1_mult
+    s_tp2 := close - atr * atr_tp2_mult
+    s_tp3 := close - atr * atr_tp3_mult
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── S/R ZONES ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+sr_high = ta.pivothigh(high, sr_len, sr_len)
+sr_low  = ta.pivotlow(low,  sr_len, sr_len)
+sr_buf  = atr * (sr_zone_pct / 100) * close
+
+if show_sr and not na(sr_high)
+    box.new(bar_index - sr_len, sr_high + sr_buf, bar_index + sr_len, sr_high - sr_buf,
+         border_color=color.new(#FF6D00,60), bgcolor=color.new(#FF6D00,90),
+         border_width=1, extend=extend.right)
+
+if show_sr and not na(sr_low)
+    box.new(bar_index - sr_len, sr_low  + sr_buf, bar_index + sr_len, sr_low  - sr_buf,
+         border_color=color.new(#00BCD4,60), bgcolor=color.new(#00BCD4,90),
+         border_width=1, extend=extend.right)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── PLOTTING ──────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+// EMA Ribbon
+p1 = plot(show_ribbon ? ema_1 : na, "EMA 8",  color=color.new(#00E5FF, 0), linewidth=1)
+p2 = plot(show_ribbon ? ema_2 : na, "EMA 13", color=color.new(#40C4FF, 0), linewidth=1)
+p3 = plot(show_ribbon ? ema_3 : na, "EMA 21", color=color.new(#FF6D00, 0), linewidth=2)
+p4 = plot(show_ribbon ? ema_4 : na, "EMA 34", color=color.new(#FF1744, 0), linewidth=1)
+fill(p1, p4, ribbon_bull ? color.new(#00E5FF,88) : ribbon_bear ? color.new(#FF1744,88) : color.new(#607D8B,92))
+
+// HTF EMAs
+plot(show_htf ? htf1_ema : na, "HTF1 EMA", color=color.new(#FFD700,20), linewidth=2, style=plot.style_stepline)
+plot(show_htf ? htf2_ema : na, "HTF2 EMA", color=color.new(#FF9800,20), linewidth=2, style=plot.style_stepline)
+
+// Signals
+mkt_icon = is_btc ? "₿" : "Au"
+plotshape(show_signals and buy_signal,  style=shape.labelup,   location=location.belowbar, color=#00C853, textcolor=color.white, text="BUY ▲",  size=size.normal, title="BUY")
+plotshape(show_signals and sell_signal, style=shape.labeldown, location=location.abovebar, color=#D50000, textcolor=color.white, text="SELL ▼", size=size.normal, title="SELL")
+
+// SL/TP drawing function
+draw_lvl(price, col, lbl) =>
+    line.new(bar_index, price, bar_index + 10, price, color=col, width=1, style=line.style_dashed)
+    label.new(bar_index + 11, price, lbl + " " + str.tostring(math.round(price, is_btc ? 0 : 2)),
+              color=color.new(col,60), textcolor=color.white, style=label.style_label_right, size=size.small)
+
+if show_sl_tp and show_labels
+    if buy_signal
+        draw_lvl(b_sl,  #FF1744, "🛑 SL")
+        draw_lvl(b_tp1, #66BB6A, "🎯 TP1")
+        draw_lvl(b_tp2, #43A047, "🎯 TP2")
+        draw_lvl(b_tp3, #2E7D32, "🎯 TP3")
+    if sell_signal
+        draw_lvl(s_sl,  #FF1744, "🛑 SL")
+        draw_lvl(s_tp1, #66BB6A, "🎯 TP1")
+        draw_lvl(s_tp2, #43A047, "🎯 TP2")
+        draw_lvl(s_tp3, #2E7D32, "🎯 TP3")
+
+// Score badge
+if show_score and buy_signal
+    label.new(bar_index, low - atr * 1.5, "Score: " + str.tostring(buy_score) + "/10",
+              color=color.new(#00C853,40), textcolor=color.white, style=label.style_label_up, size=size.small)
+if show_score and sell_signal
+    label.new(bar_index, high + atr * 1.5, "Score: " + str.tostring(sell_score) + "/10",
+              color=color.new(#D50000,40), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// Background
+bgcolor(show_bg and htf_bull ? color.new(#00C853,96) : show_bg and htf_bear ? color.new(#D50000,96) : na)
+bgcolor(show_bg and use_session and in_london and is_gold ? color.new(#FFD700,97) : na, title="London")
+bgcolor(show_bg and use_session and in_ny     and is_gold ? color.new(#29B6F6,97) : na, title="NY")
+bgcolor(show_bg and is_btc and in_asia  ? color.new(#7B1FA2,97) : na, title="BTC Asia")
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── DASHBOARD ─────────────────────────════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 16,
+     border_width=1,
+     border_color=is_btc ? color.new(#F7931A,70) : color.new(#FFD700,70),
+     frame_color =is_btc ? color.new(#F7931A,50) : color.new(#FFD700,50),
+     frame_width=2)
+
+ck  = color.new(#0A0A1A,0)
+cn  = color.new(#0D1117,0)
+cb  = color.new(#1B5E20,20)
+cr  = color.new(#B71C1C,20)
+cw  = color.new(#E65100,20)
+cz  = color.new(#263238,20)
+
+mk(r, k, v, vc) =>
+    table.cell(dash, 0, r, k, bgcolor=ck, text_color=color.new(#90A4AE,0), text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, r, v, bgcolor=vc, text_color=color.white,          text_size=size.small, text_halign=text.align_center)
+
+if show_dash and barstate.islast
+    hdr_col  = is_btc ? color.new(#F7931A,0) : color.new(#FFD700,0)
+    mkt_name = is_btc ? "₿ BITCOIN (BTC)" : "Au GOLD (XAU)"
+    table.cell(dash, 0, 0, "⚡ UNIVERSAL SNIPER", bgcolor=ck, text_color=hdr_col, text_size=size.normal, text_halign=text.align_center)
+    table.cell(dash, 1, 0, mkt_name,              bgcolor=ck, text_color=hdr_col, text_size=size.normal, text_halign=text.align_center)
+
+    // Market mode
+    mode_txt = is_btc ? "₿ BTC MODE" : is_gold ? "Au GOLD MODE" : "⚠ UNKNOWN"
+    mode_col = is_btc ? color.new(#E65100,20) : color.new(#F9A825,20)
+    mk(1, "Market Mode", mode_txt, mode_col)
+
+    // HTF
+    htf_txt = htf_bull ? "▲ BULLISH" : htf_bear ? "▼ BEARISH" : "↔ MIXED"
+    mk(2, "HTF Trend (15m+1H)", htf_txt, htf_bull ? cb : htf_bear ? cr : cw)
+
+    // EMA Ribbon
+    rib_txt = ribbon_bull ? "▲ ALIGNED UP" : ribbon_bear ? "▼ ALIGNED DOWN" : "⚠ MIXED"
+    mk(3, "EMA Ribbon", rib_txt, ribbon_bull ? cb : ribbon_bear ? cr : cw)
+
+    // RSI
+    rsi_disp = str.tostring(math.round(rsi, 1))
+    rsi_txt  = rsi > rsi_ob_auto ? "⚠ OVERBOUGHT " + rsi_disp : rsi < rsi_os_auto ? "⚠ OVERSOLD " + rsi_disp : (rsi_bull ? "✓ BULL " : rsi_bear ? "✓ BEAR " : "↔ MID ") + rsi_disp
+    mk(4, "RSI", rsi_txt, rsi > rsi_ob_auto or rsi < rsi_os_auto ? cw : rsi_bull ? cb : rsi_bear ? cr : cz)
+
+    // MACD
+    mk(5, "MACD", macd_bull ? "✓ BULLISH" : macd_bear ? "✓ BEARISH" : "↔ NEUTRAL", macd_bull ? cb : macd_bear ? cr : cz)
+
+    // Volume
+    vol_x   = str.tostring(math.round(volume / vol_ma, 1))
+    mk(6, "Volume", vol_spike ? "✓ SPIKE " + vol_x + "x" : "— LOW", vol_spike ? cb : cz)
+
+    // ATR
+    atr_disp = is_btc ? str.tostring(math.round(atr, 0)) : str.tostring(math.round(atr, 2))
+    mk(7, "ATR Volatility", atr_disp + (atr_ok ? " ✓" : " ⚠ CHOP"), atr_ok ? cb : cw)
+
+    // Session
+    sess_txt = in_london ? "🇬🇧 LONDON" : in_ny ? "🇺🇸 NEW YORK" : in_asia ? (is_btc ? "🌏 ASIAN (BTC ok)" : "😴 AVOID") : "🌙 OFF HOURS"
+    mk(8, "Session", sess_txt, in_session ? cb : (is_btc and btc_asia_ok) ? color.new(#4A148C,20) : cw)
+
+    // Stop hunt
+    hunt_txt = is_btc ? (wick_dominant ? "⚠ WICK ALERT" : "✓ CLEAN") : "N/A (Gold)"
+    mk(9, "Stop Hunt Filter", hunt_txt, is_btc and wick_dominant ? cw : is_btc ? cb : cz)
+
+    // Candle
+    cand_txt = bull_engulf ? "🟢 Bull Engulf" : bull_pin ? "🟢 Hammer" : bear_engulf ? "🔴 Bear Engulf" : bear_pin ? "🔴 Shoot Star" : "— None"
+    mk(10, "Candle Pattern", cand_txt, (bull_engulf or bull_pin) ? cb : (bear_engulf or bear_pin) ? cr : cz)
+
+    // Scores
+    b_bar = ""
+    for i = 0 to math.min(buy_score, 10) - 1
+        b_bar := b_bar + "█"
+    mk(11, "BUY Score",  b_bar + " " + str.tostring(buy_score)  + "/10", buy_score  >= min_score ? cb : cz)
+
+    s_bar = ""
+    for i = 0 to math.min(sell_score, 10) - 1
+        s_bar := s_bar + "█"
+    mk(12, "SELL Score", s_bar + " " + str.tostring(sell_score) + "/10", sell_score >= min_score ? cr : cz)
+
+    // Signal
+    sig_txt = buy_signal ? "🟢 BUY — ENTER LONG" : sell_signal ? "🔴 SELL — ENTER SHORT" : "⏳ WAITING..."
+    sig_col = buy_signal ? cb : sell_signal ? cr : cz
+    table.cell(dash, 0, 13, "SIGNAL", bgcolor=sig_col, text_color=color.white, text_size=size.normal, text_halign=text.align_center)
+    table.cell(dash, 1, 13, sig_txt,  bgcolor=sig_col, text_color=color.white, text_size=size.normal, text_halign=text.align_center)
+
+    mk(14, "Recommended TF", is_btc ? "5min / 15min" : "5min / 15min", cz)
+    mk(15, "⚠ Risk Rule",   "Max 1-2% per trade", cr)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── ALERTS ────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+mkt_label = is_btc ? "BTCUSD" : "XAUUSD"
+
+alertcondition(buy_signal and alert_buy,
+     title="Universal Sniper ⚡ BUY",
+     message="🟢 UNIVERSAL SNIPER — BUY\nMarket: {{ticker}}\nPrice: {{close}}\nTP1/TP2/TP3 shown on chart\nAlways set your Stop Loss!")
+
+alertcondition(sell_signal and alert_sell,
+     title="Universal Sniper ⚡ SELL",
+     message="🔴 UNIVERSAL SNIPER — SELL\nMarket: {{ticker}}\nPrice: {{close}}\nTP1/TP2/TP3 shown on chart\nAlways set your Stop Loss!")
+
+// Hidden plots
+plot(buy_score,  display=display.none, title="Buy Score")
+plot(sell_score, display=display.none, title="Sell Score")
