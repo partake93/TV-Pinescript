@@ -1,0 +1,597 @@
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║     UNIVERSAL SNIPER STRATEGY ⚡ — by Claude AI                 ║
+// ║     Full Auto Trade Management | XAUUSD + BTCUSD               ║
+// ║                                                                  ║
+// ║  AUTO MANAGEMENT FEATURES:                                      ║
+// ║  ✅ Partial TP — 50% closed at TP1, 50% at TP2/TP3             ║
+// ║  ✅ Trailing Stop — follows price, locks in profit              ║
+// ║  ✅ Breakeven Stop — SL moves to entry after TP1 hit           ║
+// ║  ✅ Early Exit — closes trade on reversal signal                ║
+// ║  ✅ Full Backtest Engine — win rate, P&L, drawdown              ║
+// ║  ✅ Auto Market Detection — Gold vs BTC auto-tune               ║
+// ╚══════════════════════════════════════════════════════════════════╝
+
+//@version=5
+strategy("Universal Sniper Strategy ⚡ GOLD+BTC",
+     shorttitle        = "Sniper STR ⚡",
+     overlay           = true,
+     initial_capital   = 10000,
+     default_qty_type  = strategy.percent_of_equity,
+     default_qty_value = 10,
+     commission_type   = strategy.commission.percent,
+     commission_value  = 0.05,
+     slippage          = 2,
+     max_labels_count  = 500,
+     max_lines_count   = 500,
+     max_boxes_count   = 200,
+     calc_on_every_tick= false)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── GROUPS ────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+g0  = "═══ 🌐 MARKET MODE ═══"
+g1  = "═══ 📈 EMA RIBBON ═══"
+g2  = "═══ 🌐 HTF TREND ═══"
+g3  = "═══ 📊 RSI ═══"
+g4  = "═══ 🌀 MACD ═══"
+g5  = "═══ ⚡ ATR / VOLATILITY ═══"
+g6  = "═══ 📦 VOLUME ═══"
+g7  = "═══ 🕯 CANDLE PATTERNS ═══"
+g8  = "═══ 🕐 SESSION ═══"
+g9  = "═══ 🤖 AUTO TRADE MANAGEMENT ═══"
+g10 = "═══ 💰 RISK & POSITION ═══"
+g11 = "═══ 🎨 VISUALS ═══"
+g12 = "═══ 🔔 ALERTS ═══"
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── MARKET MODE ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+market_mode = input.string("Auto", "Market Mode",
+     options=["Auto","Gold (XAUUSD)","Bitcoin (BTCUSD)"], group=g0,
+     tooltip="Auto detects Gold vs BTC and tunes all parameters")
+
+sym         = syminfo.ticker
+is_btc      = market_mode == "Bitcoin (BTCUSD)" or
+     (market_mode == "Auto" and (str.contains(sym,"BTC") or str.contains(sym,"XBT")))
+is_gold     = not is_btc
+
+// ─── Auto-Tuned Values ────────────────────────────────────────────
+atr_chop_pct = is_btc ? 0.0008  : 0.00018
+atr_sl_m     = is_btc ? 2.0     : 1.5
+atr_tp1_m    = is_btc ? 1.8     : 1.5
+atr_tp2_m    = is_btc ? 3.2     : 2.8
+atr_tp3_m    = is_btc ? 5.5     : 4.5
+atr_trail_m  = is_btc ? 1.5     : 1.0     // Trailing stop distance
+vol_mult_a   = is_btc ? 1.2     : 1.3
+rsi_ob_a     = is_btc ? 72      : 68
+rsi_os_a     = is_btc ? 28      : 32
+wick_ratio   = is_btc ? 2.5     : 99.0
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── SIGNAL INPUTS ─────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+e1 = input.int(8,  "EMA 1", group=g1)
+e2 = input.int(13, "EMA 2", group=g1)
+e3 = input.int(21, "EMA 3", group=g1)
+e4 = input.int(34, "EMA 4", group=g1)
+
+htf1        = input.timeframe("15", "HTF 1",        group=g2)
+htf2        = input.timeframe("60", "HTF 2",        group=g2)
+htf_ema_p   = input.int(50,         "HTF EMA",      group=g2)
+require_both= input.bool(true, "Require BOTH HTFs", group=g2)
+
+rsi_len     = input.int(14, "RSI Length",     group=g3)
+rsi_sig_len = input.int(9,  "RSI Signal EMA", group=g3)
+
+macd_fast   = input.int(12, "Fast",   group=g4)
+macd_slow   = input.int(26, "Slow",   group=g4)
+macd_sig_l  = input.int(9,  "Signal", group=g4)
+
+atr_len     = input.int(14, "ATR Length", group=g5)
+vol_len     = input.int(20, "Vol MA Len", group=g6)
+
+use_engulf  = input.bool(true,  "Require Engulf/Pin",    group=g7)
+engulf_min  = input.float(1.5,  "Engulf Body Ratio",     group=g7, step=0.1)
+pin_ratio   = input.float(2.0,  "Pin Wick Ratio",        group=g7, step=0.1)
+
+use_session = input.bool(true,  "Enable Session Filter", group=g8)
+lon_open    = input.int(7,  "London Open UTC",           group=g8)
+lon_close   = input.int(12, "London Close UTC",          group=g8)
+ny_open     = input.int(12, "NY Open UTC",               group=g8)
+ny_close    = input.int(20, "NY Close UTC",              group=g8)
+btc_asia    = input.bool(true, "BTC: Allow Asian Sess",  group=g8)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── AUTO TRADE MANAGEMENT INPUTS ──────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+use_partial_tp  = input.bool(true,  "✅ Partial TP (50% at TP1)",          group=g9)
+use_breakeven   = input.bool(true,  "✅ Breakeven Stop after TP1",          group=g9)
+use_trailing    = input.bool(true,  "✅ Trailing Stop",                     group=g9)
+trail_atr_mult  = input.float(1.0,  "   Trailing Stop ATR Distance",        group=g9, step=0.1,
+     tooltip="After TP1 is hit, trailing stop follows price at this ATR distance")
+use_early_exit  = input.bool(true,  "✅ Early Exit on Reversal Signal",     group=g9)
+use_time_exit   = input.bool(false, "⏱ Max Bars in Trade (time stop)",     group=g9)
+max_bars_trade  = input.int(50,     "   Max Bars",                          group=g9, minval=5)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── RISK & POSITION ───────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+risk_pct        = input.float(1.0,  "Risk % per Trade",   group=g10, minval=0.1, maxval=5.0, step=0.1,
+     tooltip="What % of account to risk per trade. 1-2% recommended")
+min_score_inp   = input.int(7,      "Min Signal Score (0-10)", group=g10, minval=5, maxval=10)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── VISUAL INPUTS ─────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+show_ribbon     = input.bool(true,  "Show EMA Ribbon",      group=g11)
+show_htf        = input.bool(true,  "Show HTF EMAs",        group=g11)
+show_sl_tp      = input.bool(true,  "Show SL/TP Lines",     group=g11)
+show_labels     = input.bool(true,  "Show Price Labels",    group=g11)
+show_bg         = input.bool(true,  "Show Background",      group=g11)
+show_dash       = input.bool(true,  "Show Dashboard",       group=g11)
+show_trade_info = input.bool(true,  "Show Trade Status",    group=g11)
+show_score      = input.bool(true,  "Show Signal Score",    group=g11)
+show_sr         = input.bool(true,  "Show S/R Zones",       group=g11)
+sr_len          = input.int(20,     "S/R Lookback",         group=g11)
+
+alert_buy       = input.bool(true,  "Alert: BUY",  group=g12)
+alert_sell      = input.bool(true,  "Alert: SELL", group=g12)
+alert_tp        = input.bool(true,  "Alert: TP Hit", group=g12)
+alert_sl        = input.bool(true,  "Alert: SL Hit", group=g12)
+alert_be        = input.bool(true,  "Alert: Breakeven Activated", group=g12)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── CORE CALCULATIONS ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+// EMAs
+ema_1 = ta.ema(close, e1)
+ema_2 = ta.ema(close, e2)
+ema_3 = ta.ema(close, e3)
+ema_4 = ta.ema(close, e4)
+ribbon_bull = ema_1 > ema_2 and ema_2 > ema_3 and ema_3 > ema_4
+ribbon_bear = ema_1 < ema_2 and ema_2 < ema_3 and ema_3 < ema_4
+
+// HTF
+htf1_ema = request.security(syminfo.tickerid, htf1, ta.ema(close, htf_ema_p), lookahead=barmerge.lookahead_off)
+htf2_ema = request.security(syminfo.tickerid, htf2, ta.ema(close, htf_ema_p), lookahead=barmerge.lookahead_off)
+htf_bull = require_both ? (close > htf1_ema and close > htf2_ema) : (close > htf1_ema or close > htf2_ema)
+htf_bear = require_both ? (close < htf1_ema and close < htf2_ema) : (close < htf1_ema or close < htf2_ema)
+
+// RSI
+rsi     = ta.rsi(close, rsi_len)
+rsi_ema = ta.ema(rsi, rsi_sig_len)
+rsi_bull = rsi > 50 and rsi > rsi_ema and rsi < rsi_ob_a
+rsi_bear = rsi < 50 and rsi < rsi_ema and rsi > rsi_os_a
+rsi_cup  = ta.crossover(rsi, rsi_ema)
+rsi_cdn  = ta.crossunder(rsi, rsi_ema)
+
+// MACD
+[macd_l, macd_s, macd_h] = ta.macd(close, macd_fast, macd_slow, macd_sig_l)
+macd_bull = macd_l > macd_s and macd_h > 0 and macd_h > macd_h[1]
+macd_bear = macd_l < macd_s and macd_h < 0 and macd_h < macd_h[1]
+
+// ATR
+atr    = ta.atr(atr_len)
+atr_ok = atr >= close * atr_chop_pct
+
+// Volume
+vol_ma    = ta.sma(volume, vol_len)
+vol_spike = volume >= vol_ma * vol_mult_a
+
+// Candle patterns
+body        = math.abs(close - open)
+body_prev   = math.abs(close[1] - open[1])
+upper_wick  = high - math.max(close, open)
+lower_wick  = math.min(close, open) - low
+bull_engulf = close > open and close[1] < open[1] and close >= open[1] and open <= close[1] and body >= body_prev * engulf_min
+bear_engulf = close < open and close[1] > open[1] and close <= open[1] and open >= close[1] and body >= body_prev * engulf_min
+bull_pin    = lower_wick >= body * pin_ratio and upper_wick <= body * 1.2 and close > open
+bear_pin    = upper_wick >= body * pin_ratio and lower_wick <= body * 1.2 and close < open
+candle_bull = not use_engulf or (bull_engulf or bull_pin)
+candle_bear = not use_engulf or (bear_engulf or bear_pin)
+
+// Stop hunt
+wick_dom   = upper_wick / math.max(high - low, 0.0001) > 0.6 or lower_wick / math.max(high - low, 0.0001) > 0.6
+no_hunt_b  = not (is_btc and lower_wick >= body * wick_ratio)
+no_hunt_s  = not (is_btc and upper_wick >= body * wick_ratio)
+
+// Session
+utc_hour   = hour(time, "UTC")
+in_london  = utc_hour >= lon_open  and utc_hour < lon_close
+in_ny      = utc_hour >= ny_open   and utc_hour < ny_close
+in_asia    = utc_hour >= 0         and utc_hour < 7
+in_session = in_london or in_ny
+session_ok = not use_session or (is_btc ? (btc_asia ? true : in_session) : in_session)
+
+// EMA cross
+ema_cross_up   = ta.crossover(ema_1, ema_3)
+ema_cross_down = ta.crossunder(ema_1, ema_3)
+
+// Trend strength
+ema_spread  = math.abs(ema_1 - ema_4) / close * 100
+trend_str   = ema_spread > 0.05
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── SIGNAL SCORING ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+buy_score = 0
+buy_score := buy_score + (htf_bull    ? 2 : 0)
+buy_score := buy_score + (ribbon_bull ? 2 : 0)
+buy_score := buy_score + (rsi_bull    ? 1 : 0)
+buy_score := buy_score + (rsi_cup     ? 1 : 0)
+buy_score := buy_score + (macd_bull   ? 1 : 0)
+buy_score := buy_score + (vol_spike   ? 1 : 0)
+buy_score := buy_score + (candle_bull ? 1 : 0)
+buy_score := buy_score + (atr_ok      ? 1 : 0)
+
+sell_score = 0
+sell_score := sell_score + (htf_bear    ? 2 : 0)
+sell_score := sell_score + (ribbon_bear ? 2 : 0)
+sell_score := sell_score + (rsi_bear    ? 1 : 0)
+sell_score := sell_score + (rsi_cdn     ? 1 : 0)
+sell_score := sell_score + (macd_bear   ? 1 : 0)
+sell_score := sell_score + (vol_spike   ? 1 : 0)
+sell_score := sell_score + (candle_bear ? 1 : 0)
+sell_score := sell_score + (atr_ok      ? 1 : 0)
+
+// ─── RAW SIGNALS ─────────────────────────────────────────────
+buy_raw  = buy_score  >= min_score_inp and ema_cross_up   and session_ok and atr_ok and no_hunt_b and trend_str
+sell_raw = sell_score >= min_score_inp and ema_cross_down and session_ok and atr_ok and no_hunt_s and trend_str
+
+// ─── REVERSAL DETECTION (for early exit) ─────────────────────
+// A reversal is confirmed when opposite ribbon forms + RSI crosses
+bull_reversal = ribbon_bear and rsi_cdn and macd_bear
+bear_reversal = ribbon_bull and rsi_cup  and macd_bull
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── TRADE STATE VARIABLES ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+var float entry_p      = na    // Entry price
+var float sl_price     = na    // Current stop loss
+var float tp1_price    = na    // TP1 level
+var float tp2_price    = na    // TP2 level
+var float tp3_price    = na    // TP3 level
+var float trail_price  = na    // Current trailing stop
+var bool  tp1_hit      = false // Has TP1 been hit?
+var bool  be_active    = false // Is breakeven active?
+var bool  in_long      = false
+var bool  in_short     = false
+var int   bars_in_trade= 0
+var float peak_price   = na    // For trailing stop tracking
+var int   last_signal_score = 0
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── POSITION SIZING (Risk-Based) ──────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// Risk % of equity / SL distance = qty
+calc_qty(entry, sl) =>
+    sl_dist  = math.abs(entry - sl)
+    risk_amt = strategy.equity * (risk_pct / 100)
+    sl_dist > 0 ? risk_amt / sl_dist : 1.0
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── ENTRY LOGIC ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+swing_low  = ta.lowest(low,  10)
+swing_high = ta.highest(high, 10)
+
+if buy_raw and strategy.position_size == 0
+    // Calculate levels
+    new_sl   = math.min(swing_low  - atr * 0.3, close - atr * atr_sl_m)
+    new_tp1  = close + atr * atr_tp1_m
+    new_tp2  = close + atr * atr_tp2_m
+    new_tp3  = close + atr * atr_tp3_m
+    new_qty  = calc_qty(close, new_sl)
+
+    strategy.entry("LONG", strategy.long, qty=new_qty, comment="BUY ▲ " + str.tostring(buy_score) + "/10")
+
+    // Store state
+    entry_p       := close
+    sl_price      := new_sl
+    tp1_price     := new_tp1
+    tp2_price     := new_tp2
+    tp3_price     := new_tp3
+    trail_price   := new_sl
+    peak_price    := close
+    tp1_hit       := false
+    be_active     := false
+    in_long       := true
+    in_short      := false
+    bars_in_trade := 0
+    last_signal_score := buy_score
+
+if sell_raw and strategy.position_size == 0
+    new_sl   = math.max(swing_high + atr * 0.3, close + atr * atr_sl_m)
+    new_tp1  = close - atr * atr_tp1_m
+    new_tp2  = close - atr * atr_tp2_m
+    new_tp3  = close - atr * atr_tp3_m
+    new_qty  = calc_qty(close, new_sl)
+
+    strategy.entry("SHORT", strategy.short, qty=new_qty, comment="SELL ▼ " + str.tostring(sell_score) + "/10")
+
+    entry_p       := close
+    sl_price      := new_sl
+    tp1_price     := new_tp1
+    tp2_price     := new_tp2
+    tp3_price     := new_tp3
+    trail_price   := new_sl
+    peak_price    := close
+    tp1_hit       := false
+    be_active     := false
+    in_long       := false
+    in_short      := true
+    bars_in_trade := 0
+    last_signal_score := sell_score
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── AUTO TRADE MANAGEMENT ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+if strategy.position_size != 0
+    bars_in_trade := bars_in_trade + 1
+
+    // ── LONG TRADE MANAGEMENT ─────────────────────────────────
+    if in_long and strategy.position_size > 0
+
+        // Update peak for trailing
+        if high > peak_price
+            peak_price := high
+
+        // ── Trailing Stop Update ───────────────────────────────
+        if use_trailing and tp1_hit
+            new_trail = peak_price - atr * trail_atr_mult
+            if new_trail > trail_price
+                trail_price := new_trail
+                sl_price    := trail_price
+
+        // ── TP1 Hit — Book 50%, activate breakeven ─────────────
+        if not tp1_hit and high >= tp1_price
+            if use_partial_tp
+                strategy.close("LONG", qty_percent=50, comment="🎯 TP1 +50%")
+            tp1_hit := true
+            if use_breakeven
+                sl_price  := entry_p  // Move SL to entry (breakeven)
+                be_active := true
+
+        // ── TP2 Hit — Book another 25% ─────────────────────────
+        if tp1_hit and high >= tp2_price and strategy.position_size > 0
+            if use_partial_tp
+                strategy.close("LONG", qty_percent=50, comment="🎯 TP2 +25%")
+
+        // ── TP3 Hit — Close remaining ──────────────────────────
+        if high >= tp3_price and strategy.position_size > 0
+            strategy.close("LONG", comment="🎯 TP3 FULL CLOSE")
+            in_long := false
+
+        // ── Hard Stop Loss ─────────────────────────────────────
+        if low <= sl_price and strategy.position_size > 0
+            strategy.close("LONG", comment=be_active ? "🔄 Breakeven Exit" : "🛑 Stop Loss")
+            in_long := false
+
+        // ── Early Exit on Reversal Signal ─────────────────────
+        if use_early_exit and bull_reversal and strategy.position_size > 0
+            strategy.close("LONG", comment="⚠ Reversal Exit")
+            in_long := false
+
+        // ── Time Stop ─────────────────────────────────────────
+        if use_time_exit and bars_in_trade >= max_bars_trade and strategy.position_size > 0
+            strategy.close("LONG", comment="⏱ Time Stop")
+            in_long := false
+
+    // ── SHORT TRADE MANAGEMENT ────────────────────────────────
+    if in_short and strategy.position_size < 0
+
+        // Update peak (lowest point for short)
+        if low < peak_price
+            peak_price := low
+
+        // ── Trailing Stop Update ───────────────────────────────
+        if use_trailing and tp1_hit
+            new_trail = peak_price + atr * trail_atr_mult
+            if new_trail < trail_price
+                trail_price := new_trail
+                sl_price    := trail_price
+
+        // ── TP1 Hit ────────────────────────────────────────────
+        if not tp1_hit and low <= tp1_price
+            if use_partial_tp
+                strategy.close("SHORT", qty_percent=50, comment="🎯 TP1 +50%")
+            tp1_hit := true
+            if use_breakeven
+                sl_price  := entry_p
+                be_active := true
+
+        // ── TP2 Hit ────────────────────────────────────────────
+        if tp1_hit and low <= tp2_price and strategy.position_size < 0
+            if use_partial_tp
+                strategy.close("SHORT", qty_percent=50, comment="🎯 TP2 +25%")
+
+        // ── TP3 Hit ────────────────────────────────────────────
+        if low <= tp3_price and strategy.position_size < 0
+            strategy.close("SHORT", comment="🎯 TP3 FULL CLOSE")
+            in_short := false
+
+        // ── Hard Stop Loss ─────────────────────────────────────
+        if high >= sl_price and strategy.position_size < 0
+            strategy.close("SHORT", comment=be_active ? "🔄 Breakeven Exit" : "🛑 Stop Loss")
+            in_short := false
+
+        // ── Early Exit on Reversal ─────────────────────────────
+        if use_early_exit and bear_reversal and strategy.position_size < 0
+            strategy.close("SHORT", comment="⚠ Reversal Exit")
+            in_short := false
+
+        // ── Time Stop ─────────────────────────────────────────
+        if use_time_exit and bars_in_trade >= max_bars_trade and strategy.position_size < 0
+            strategy.close("SHORT", comment="⏱ Time Stop")
+            in_short := false
+
+// Reset state when flat
+if strategy.position_size == 0
+    in_long  := false
+    in_short := false
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── S/R ZONES ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+sr_high = ta.pivothigh(high, sr_len, sr_len)
+sr_low  = ta.pivotlow(low,  sr_len, sr_len)
+sr_buf  = atr * 0.3
+
+if show_sr and not na(sr_high)
+    box.new(bar_index-sr_len, sr_high+sr_buf, bar_index+sr_len, sr_high-sr_buf,
+         border_color=color.new(#FF6D00,60), bgcolor=color.new(#FF6D00,90),
+         border_width=1, extend=extend.right)
+if show_sr and not na(sr_low)
+    box.new(bar_index-sr_len, sr_low+sr_buf, bar_index+sr_len, sr_low-sr_buf,
+         border_color=color.new(#00BCD4,60), bgcolor=color.new(#00BCD4,90),
+         border_width=1, extend=extend.right)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── PLOTTING ──────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+// EMA Ribbon
+p1 = plot(show_ribbon ? ema_1 : na, "EMA 8",  color=color.new(#00E5FF,0), linewidth=1)
+p2 = plot(show_ribbon ? ema_2 : na, "EMA 13", color=color.new(#40C4FF,0), linewidth=1)
+p3 = plot(show_ribbon ? ema_3 : na, "EMA 21", color=color.new(#FF6D00,0), linewidth=2)
+p4 = plot(show_ribbon ? ema_4 : na, "EMA 34", color=color.new(#FF1744,0), linewidth=1)
+fill(p1, p4, ribbon_bull ? color.new(#00E5FF,88) : ribbon_bear ? color.new(#FF1744,88) : color.new(#607D8B,92))
+
+// HTF
+plot(show_htf ? htf1_ema : na, "HTF1 EMA", color=color.new(#FFD700,20), linewidth=2, style=plot.style_stepline)
+plot(show_htf ? htf2_ema : na, "HTF2 EMA", color=color.new(#FF9800,20), linewidth=2, style=plot.style_stepline)
+
+// Entry signals
+plotshape(buy_raw  and strategy.position_size == 0, style=shape.labelup,   location=location.belowbar, color=#00C853, textcolor=color.white, text="BUY ▲",  size=size.normal, title="BUY")
+plotshape(sell_raw and strategy.position_size == 0, style=shape.labeldown, location=location.abovebar, color=#D50000, textcolor=color.white, text="SELL ▼", size=size.normal, title="SELL")
+
+// Active trade levels
+in_trade = strategy.position_size != 0
+
+plot(show_sl_tp and in_trade ? sl_price   : na, "Stop Loss", color=color.new(#FF1744,0), linewidth=2, style=plot.style_linebr)
+plot(show_sl_tp and in_trade ? tp1_price  : na, "TP1",       color=color.new(#66BB6A,0), linewidth=1, style=plot.style_linebr)
+plot(show_sl_tp and in_trade ? tp2_price  : na, "TP2",       color=color.new(#43A047,0), linewidth=1, style=plot.style_linebr)
+plot(show_sl_tp and in_trade ? tp3_price  : na, "TP3",       color=color.new(#2E7D32,0), linewidth=2, style=plot.style_linebr)
+plot(show_sl_tp and in_trade and use_trailing and tp1_hit ? trail_price : na, "Trail Stop", color=color.new(#FF9800,0), linewidth=2, style=plot.style_linebr)
+plot(show_sl_tp and in_trade ? entry_p    : na, "Entry",     color=color.new(#FFFFFF,40), linewidth=1, style=plot.style_linebr)
+
+// Score badges
+if show_score and buy_raw and strategy.position_size == 0
+    label.new(bar_index, low - atr*1.5, "Score: "+str.tostring(buy_score)+"/10",
+              color=color.new(#00C853,40), textcolor=color.white, style=label.style_label_up, size=size.small)
+if show_score and sell_raw and strategy.position_size == 0
+    label.new(bar_index, high + atr*1.5, "Score: "+str.tostring(sell_score)+"/10",
+              color=color.new(#D50000,40), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// Breakeven activated label
+if be_active and not be_active[1]
+    label.new(bar_index, sl_price, "🔒 BREAKEVEN",
+              color=color.new(#FF9800,40), textcolor=color.white, style=label.style_label_right, size=size.small)
+
+// Background
+bgcolor(show_bg and htf_bull ? color.new(#00C853,96) : show_bg and htf_bear ? color.new(#D50000,96) : na)
+bgcolor(show_bg and use_session and in_london and is_gold ? color.new(#FFD700,97) : na)
+bgcolor(show_bg and use_session and in_ny     and is_gold ? color.new(#29B6F6,97) : na)
+bgcolor(show_bg and is_btc and in_asia ? color.new(#7B1FA2,97) : na)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── DASHBOARD ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 20,
+     border_width=1,
+     border_color=is_btc ? color.new(#F7931A,70) : color.new(#FFD700,70),
+     frame_color =is_btc ? color.new(#F7931A,50) : color.new(#FFD700,50),
+     frame_width=2)
+
+ck = color.new(#0A0A1A,0)
+cb = color.new(#1B5E20,20)
+cr = color.new(#B71C1C,20)
+cw = color.new(#E65100,20)
+cz = color.new(#263238,20)
+co = color.new(#E65100,20)
+
+mk(r, k, v, vc) =>
+    table.cell(dash, 0, r, k, bgcolor=ck, text_color=color.new(#90A4AE,0), text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, r, v, bgcolor=vc, text_color=color.white,          text_size=size.small, text_halign=text.align_center)
+
+if show_dash and barstate.islast
+    hdr_col  = is_btc ? color.new(#F7931A,0) : color.new(#FFD700,0)
+    mkt_name = is_btc ? "₿ BITCOIN" : "Au GOLD"
+    table.cell(dash, 0, 0, "⚡ SNIPER STRATEGY", bgcolor=ck, text_color=hdr_col, text_size=size.normal, text_halign=text.align_center)
+    table.cell(dash, 1, 0, mkt_name,             bgcolor=ck, text_color=hdr_col, text_size=size.normal, text_halign=text.align_center)
+
+    mk(1, "HTF Trend",    htf_bull ? "▲ BULLISH" : htf_bear ? "▼ BEARISH" : "↔ MIXED", htf_bull ? cb : htf_bear ? cr : cw)
+    mk(2, "EMA Ribbon",   ribbon_bull ? "▲ UP" : ribbon_bear ? "▼ DOWN" : "⚠ MIXED", ribbon_bull ? cb : ribbon_bear ? cr : cw)
+    mk(3, "RSI",          str.tostring(math.round(rsi,1)) + (rsi_bull ? " ✓ BULL" : rsi_bear ? " ✓ BEAR" : " ↔"), rsi_bull ? cb : rsi_bear ? cr : cz)
+    mk(4, "MACD",         macd_bull ? "✓ BULL" : macd_bear ? "✓ BEAR" : "↔", macd_bull ? cb : macd_bear ? cr : cz)
+    mk(5, "Volume",       vol_spike ? "✓ SPIKE" : "— LOW", vol_spike ? cb : cz)
+    mk(6, "Session",      in_london ? "🇬🇧 London" : in_ny ? "🇺🇸 New York" : in_asia ? "🌏 Asia" : "🌙 Off", in_session ? cb : (is_btc and btc_asia) ? color.new(#4A148C,20) : cw)
+
+    // Buy/Sell scores
+    b_bar = ""
+    for i = 0 to math.min(buy_score,10)-1
+        b_bar := b_bar + "█"
+    mk(7, "BUY Score",  b_bar + " " + str.tostring(buy_score)  + "/10", buy_score  >= min_score_inp ? cb : cz)
+    s_bar = ""
+    for i = 0 to math.min(sell_score,10)-1
+        s_bar := s_bar + "█"
+    mk(8, "SELL Score", s_bar + " " + str.tostring(sell_score) + "/10", sell_score >= min_score_inp ? cr : cz)
+
+    // ── TRADE STATUS SECTION ──────────────────────────────────
+    table.cell(dash, 0, 9,  "── TRADE STATUS ──", bgcolor=ck, text_color=color.new(#546E7A,0), text_size=size.tiny, text_halign=text.align_center)
+    table.cell(dash, 1, 9,  "────────────────",   bgcolor=ck, text_color=color.new(#546E7A,0), text_size=size.tiny, text_halign=text.align_center)
+
+    pos_txt = strategy.position_size > 0 ? "🟢 LONG ACTIVE" : strategy.position_size < 0 ? "🔴 SHORT ACTIVE" : "⏳ FLAT"
+    pos_col = strategy.position_size > 0 ? cb : strategy.position_size < 0 ? cr : cz
+    mk(10, "Position", pos_txt, pos_col)
+
+    if show_trade_info and strategy.position_size != 0
+        dec = is_btc ? 0 : 2
+        mk(11, "Entry Price",  str.tostring(math.round(entry_p, dec)),   cz)
+        mk(12, "Stop Loss",    str.tostring(math.round(sl_price, dec)) + (be_active ? " 🔒BE" : ""),  cr)
+        mk(13, "TP1",          str.tostring(math.round(tp1_price, dec)) + (tp1_hit ? " ✅" : ""),      cb)
+        mk(14, "TP2 / TP3",    str.tostring(math.round(tp2_price, dec)) + " / " + str.tostring(math.round(tp3_price, dec)), cb)
+        pnl_pct = strategy.position_size > 0 ?
+             (close - entry_p) / entry_p * 100 :
+             (entry_p - close) / entry_p * 100
+        pnl_col = pnl_pct >= 0 ? cb : cr
+        mk(15, "Unrealised P&L", str.tostring(math.round(pnl_pct, 2)) + "%", pnl_col)
+        mk(16, "Bars in Trade",  str.tostring(bars_in_trade), cz)
+    else
+        mk(11, "Waiting for signal...", "", cz)
+        mk(12, "", "", cz)
+        mk(13, "", "", cz)
+        mk(14, "", "", cz)
+        mk(15, "", "", cz)
+        mk(16, "", "", cz)
+
+    // ── STATS ─────────────────────────────────────────────────
+    win_rate = strategy.wintrades / math.max(strategy.closedtrades, 1) * 100
+    mk(17, "Win Rate",    str.tostring(math.round(win_rate, 1)) + "%", win_rate >= 50 ? cb : cr)
+    mk(18, "Net Profit",  str.tostring(math.round(strategy.netprofit, 2)), strategy.netprofit >= 0 ? cb : cr)
+    mk(19, "⚠ Risk/Trade", str.tostring(risk_pct) + "% equity", co)
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── ALERTS ────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+alertcondition(buy_raw  and strategy.position_size == 0 and alert_buy,
+     title="Sniper ⚡ BUY Entry",
+     message="🟢 SNIPER STRATEGY — BUY\nMarket: {{ticker}} | Price: {{close}}\nScore: High confluence signal\nSL/TP levels shown on chart\n⚠ Risk only 1-2% of account")
+
+alertcondition(sell_raw and strategy.position_size == 0 and alert_sell,
+     title="Sniper ⚡ SELL Entry",
+     message="🔴 SNIPER STRATEGY — SELL\nMarket: {{ticker}} | Price: {{close}}\nScore: High confluence signal\nSL/TP levels shown on chart\n⚠ Risk only 1-2% of account")
+
+alertcondition(ta.crossunder(low, sl_price) and strategy.position_size > 0 and alert_sl,
+     title="Sniper ⚡ STOP LOSS Hit",
+     message="🛑 STOP LOSS HIT\nMarket: {{ticker}} | Price: {{close}}\nTrade closed. Wait for next signal.")
+
+alertcondition(be_active and not be_active[1] and alert_be,
+     title="Sniper ⚡ BREAKEVEN Active",
+     message="🔒 BREAKEVEN ACTIVATED\nMarket: {{ticker}}\nSL moved to entry. Trade is now risk-free!")
+
+// Hidden plots
+plot(buy_score,  display=display.none, title="Buy Score")
+plot(sell_score, display=display.none, title="Sell Score")
